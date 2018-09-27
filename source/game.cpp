@@ -12,142 +12,60 @@ const int kAvoidCount = 20;
 static float RandomFloat01() { return (float)rand() / (float)RAND_MAX; }
 static float RandomFloat(float from, float to) { return RandomFloat01() * (to - from) + from; }
 
-
-// -------------------------------------------------------------------------------------------------
-// super simple "component system"
-
-class GameObject;
-class Component;
-
-typedef std::vector<Component*> ComponentVector;
-typedef std::vector<GameObject*> GameObjectVector;
-
-
-// Component base class. Knows about the parent game object, and has some virtual methods.
-class Component
-{
-public:
-    Component() : m_GameObject(nullptr) {}
-    virtual ~Component() {}
-    
-    virtual void Start() {}
-    virtual void Update(double time, float deltaTime) {}
-
-    const GameObject& GetGameObject() const { return *m_GameObject; }
-    GameObject& GetGameObject() { return *m_GameObject; }
-    void SetGameObject(GameObject& go) { m_GameObject = &go; }
-    bool HasGameObject() const { return m_GameObject != nullptr; }
-
-private:
-    GameObject* m_GameObject;
-};
-
-
-// Game object class. Has an array of components.
-class GameObject
-{
-public:
-    GameObject(const std::string&& name) : m_Name(name) { }
-    ~GameObject()
-    {
-        // game object owns the components; destroy them when deleting the game object
-        for (auto c : m_Components) delete c;
-    }
-
-    // get a component of type T, or null if it does not exist on this game object
-    template<typename T>
-    T* GetComponent()
-    {
-        for (auto i : m_Components)
-        {
-            T* c = dynamic_cast<T*>(i);
-            if (c != nullptr)
-                return c;
-        }
-        return nullptr;
-    }
-
-    // add a new component to this game object
-    void AddComponent(Component* c)
-    {
-        assert(!c->HasGameObject());
-        c->SetGameObject(*this);
-        m_Components.emplace_back(c);
-    }
-    
-    void Start() { for (auto c : m_Components) c->Start(); }
-    void Update(double time, float deltaTime) { for (auto c : m_Components) c->Update(time, deltaTime); }
-    
-private:
-    std::string m_Name;
-    ComponentVector m_Components;
-};
-
-// The "scene": array of game objects.
-static GameObjectVector s_Objects;
-
-
-// Finds all components of given type in the whole scene
-template<typename T>
-static ComponentVector FindAllComponentsOfType()
-{
-    ComponentVector res;
-    for (auto go : s_Objects)
-    {
-        T* c = go->GetComponent<T>();
-        if (c != nullptr)
-            res.emplace_back(c);
-    }
-    return res;
-}
-
-// Find one component of given type in the scene (returns first found one)
-template<typename T>
-static T* FindOfType()
-{
-    for (auto go : s_Objects)
-    {
-        T* c = go->GetComponent<T>();
-        if (c != nullptr)
-            return c;
-    }
-    return nullptr;
-}
-
-
-
 // -------------------------------------------------------------------------------------------------
 // components we use in our "game"
 
 
 // 2D position: just x,y coordinates
-struct PositionComponent : public Component
+struct PositionComponent
 {
     float x, y;
+	
+    PositionComponent(float x, float y)
+		: x(x)
+		, y(y)
+    {
+	}
 };
 
 
 // Sprite: color, sprite index (in the sprite atlas), and scale for rendering it
-struct SpriteComponent : public Component
+struct SpriteComponent
 {
     float colorR, colorG, colorB;
     int spriteIndex;
     float scale;
+	
+    SpriteComponent(float colorR, float colorG, float colorB, int spriteIndex, float scale)
+		: colorR(colorR)
+		, colorG(colorG)
+		, colorB(colorB)
+		, spriteIndex(spriteIndex)
+		, scale(scale)
+    {
+	}
 };
 
 
 // World bounds for our "game" logic: x,y minimum & maximum values
-struct WorldBoundsComponent : public Component
+struct WorldBoundsComponent
 {
     float xMin, xMax, yMin, yMax;
+	
+    WorldBoundsComponent(float xMin, float xMax, float yMin, float yMax)
+		: xMin(xMin)
+		, xMax(xMax)
+		, yMin(yMin)
+		, yMax(yMax)
+    {
+	}
 };
 
 
 // Move around with constant velocity. When reached world bounds, reflect back from them.
-struct MoveComponent : public Component
+struct MoveComponent
 {
     float velx, vely;
-    WorldBoundsComponent* bounds;
     
     MoveComponent(float minSpeed, float maxSpeed)
     {
@@ -160,240 +78,244 @@ struct MoveComponent : public Component
         vely = sinf(angle) * speed;
     }
 
-    virtual void Start() override
+    void UpdatePosition(float deltaTime, PositionComponent& pos, WorldBoundsComponent& bounds)
     {
-        bounds = FindOfType<WorldBoundsComponent>();
-    }
-    
-    virtual void Update(double time, float deltaTime) override
-    {
-        // get Position component on our game object
-        PositionComponent* pos = GetGameObject().GetComponent<PositionComponent>();
-        
         // update position based on movement velocity & delta time
-        pos->x += velx * deltaTime;
-        pos->y += vely * deltaTime;
+        pos.x += velx * deltaTime;
+        pos.y += vely * deltaTime;
         
         // check against world bounds; put back onto bounds and mirror the velocity component to "bounce" back
-        if (pos->x < bounds->xMin)
+        if (pos.x < bounds.xMin)
         {
             velx = -velx;
-            pos->x = bounds->xMin;
+            pos.x = bounds.xMin;
         }
-        if (pos->x > bounds->xMax)
+        if (pos.x > bounds.xMax)
         {
             velx = -velx;
-            pos->x = bounds->xMax;
+            pos.x = bounds.xMax;
         }
-        if (pos->y < bounds->yMin)
+        if (pos.y < bounds.yMin)
         {
             vely = -vely;
-            pos->y = bounds->yMin;
+            pos.y = bounds.yMin;
         }
-        if (pos->y > bounds->yMax)
+        if (pos.y > bounds.yMax)
         {
             vely = -vely;
-            pos->y = bounds->yMax;
+            pos.y = bounds.yMax;
         }
     }
 };
 
-
 // When present, tells things that have Avoid component to avoid this object
-struct AvoidThisComponent : public Component
+struct AvoidThisComponent
 {
     float distance;
+	
+    AvoidThisComponent(float distance)
+		: distance(distance)
+    {
+	}
 };
-
 
 // Objects with this component "avoid" objects with AvoidThis component:
 // - when they get closer to them than Avoid::distance, they bounce back,
 // - also they take sprite color from the object they just bumped into
-struct AvoidComponent : public Component
+struct AvoidComponent
 {
-    static ComponentVector avoidList;
-    
-    virtual void Start() override
+    static float DistanceSq(const PositionComponent& a, const PositionComponent& b)
     {
-        // fetch list of objects we'll be avoiding, if we haven't done that yet
-        if (avoidList.empty())
-            avoidList = FindAllComponentsOfType<AvoidThisComponent>();
-    }
-    
-    static float DistanceSq(const PositionComponent* a, const PositionComponent* b)
-    {
-        float dx = a->x - b->x;
-        float dy = a->y - b->y;
+        float dx = a.x - b.x;
+        float dy = a.y - b.y;
         return dx * dx + dy * dy;
     }
     
-    void ResolveCollision(float deltaTime)
+    void ResolveCollision(float deltaTime, MoveComponent& move, PositionComponent& pos)
     {
-        MoveComponent* move = GetGameObject().GetComponent<MoveComponent>();
         // flip velocity
-        move->velx = -move->velx;
-        move->vely = -move->vely;
+        move.velx = -move.velx;
+        move.vely = -move.vely;
         
         // move us out of collision, by moving just a tiny bit more than we'd normally move during a frame
-        PositionComponent* pos = GetGameObject().GetComponent<PositionComponent>();
-        pos->x += move->velx * deltaTime * 1.1f;
-        pos->y += move->vely * deltaTime * 1.1f;
+        pos.x += move.velx * deltaTime * 1.1f;
+        pos.y += move.vely * deltaTime * 1.1f;
     }
-
-    virtual void Update(double time, float deltaTime) override
+	
+	template<class T>
+    void ResolveCollisions(float deltaTime, SpriteComponent& mySprite, MoveComponent& myMove, PositionComponent& myPosition, std::vector<T>& avoidList)
     {
-        PositionComponent* myposition = GetGameObject().GetComponent<PositionComponent>();
         // check each thing in avoid list
-        for (auto avc : avoidList)
+        for (auto& o : avoidList)
         {
-            AvoidThisComponent* av = (AvoidThisComponent*)avc;
-
-            PositionComponent* avoidposition = av->GetGameObject().GetComponent<PositionComponent>();
             // is our position closer to "thing to avoid" position than the avoid distance?
-            if (DistanceSq(myposition, avoidposition) < av->distance * av->distance)
+            if (DistanceSq(myPosition, o.pos) < o.avoid.distance * o.avoid.distance)
             {
-                ResolveCollision(deltaTime);
+                ResolveCollision(deltaTime, myMove, myPosition);
 
                 // also make our sprite take the color of the thing we just bumped into
-                SpriteComponent* avoidSprite = av->GetGameObject().GetComponent<SpriteComponent>();
-                SpriteComponent* mySprite = GetGameObject().GetComponent<SpriteComponent>();
-                mySprite->colorR = avoidSprite->colorR;
-                mySprite->colorG = avoidSprite->colorG;
-                mySprite->colorB = avoidSprite->colorB;
+                mySprite.colorR = o.sprite.colorR;
+                mySprite.colorG = o.sprite.colorG;
+                mySprite.colorB = o.sprite.colorB;
             }
         }
     }
 };
 
-ComponentVector AvoidComponent::avoidList;
+struct WorldBounds
+{
+	WorldBoundsComponent wb;
 
+	WorldBounds(const WorldBoundsComponent& bounds)
+		: wb(bounds)
+	{}
+};
+
+struct AvoidThis
+{
+	AvoidThisComponent avoid;
+	PositionComponent pos;
+	MoveComponent move;
+	SpriteComponent sprite;
+	
+    AvoidThis(const WorldBoundsComponent& bounds)
+		: move(0.1f, 0.2f)
+        // position it in small area near center of world bounds
+		, pos(RandomFloat(bounds.xMin, bounds.xMax) * 0.2f,
+			  RandomFloat(bounds.yMin, bounds.yMax) * 0.2f)
+        // setup a sprite for it (6th one), and a random color
+		, sprite(RandomFloat(0.5f, 1.0f),
+		         RandomFloat(0.5f, 1.0f),
+		         RandomFloat(0.5f, 1.0f),
+		         5,
+		         2.0f)
+        // setup an "avoid this" component
+		, avoid(1.3f)
+	{
+	}
+};
+
+struct RegularObject
+{
+	PositionComponent pos;
+	SpriteComponent sprite;
+	MoveComponent move;
+	AvoidComponent avoid;
+	
+    RegularObject(const WorldBoundsComponent& bounds)
+		: move(0.5f, 0.7f)
+        // position it within world bounds
+		, pos(RandomFloat(bounds.xMin, bounds.xMax),
+			  RandomFloat(bounds.yMin, bounds.yMax))
+        // setup a sprite for it (random sprite index from first 5), and initial white color
+		, sprite(1.0f,
+		         1.0f,
+		         1.0f,
+		         rand() % 5,
+		         1.0f)
+	{
+	}
+};
 
 // -------------------------------------------------------------------------------------------------
 // "the game"
 
+struct Game
+{
+	WorldBounds bounds;
+	std::vector<AvoidThis> avoidThis;
+	std::vector<RegularObject> regularObject;
+
+	Game(const WorldBoundsComponent& bounds)
+		: bounds(bounds)
+	{
+		// create regular objects that move
+		regularObject.reserve(kObjectCount);
+		for (auto i = 0; i < kObjectCount; ++i)
+			regularObject.emplace_back(bounds);
+
+		// create objects that should be avoided
+		avoidThis.reserve(kAvoidCount);
+		for (auto i = 0; i < kAvoidCount; ++i)
+			avoidThis.emplace_back(bounds);
+	}
+	void Clear()
+	{
+		avoidThis.clear();
+		regularObject.clear();
+	}
+};
+
+
+template<class Movable>
+void UpdatePosition(float deltaTime, Movable& go, WorldBoundsComponent& bounds)
+{
+	go.move.UpdatePosition(deltaTime, go.pos, bounds);
+}
+
+template<class Avoider>
+void ResolveCollisions(float deltaTime, Avoider& go, std::vector<AvoidThis>& avoidList)
+{
+	go.avoid.ResolveCollisions(deltaTime, go.sprite, go.move, go.pos, avoidList);
+}
+
+template<class T>
+void ExportSpriteData(const T& go, sprite_data_t& spr)
+{
+    // write out their Position & Sprite data into destination buffer that will be rendered later on.
+    //
+    // Using a smaller global scale "zooms out" the rendering, so to speak.
+    float globalScale = 0.05f;
+    spr.posX = go.pos.x * globalScale;
+    spr.posY = go.pos.y * globalScale;
+    spr.scale = go.sprite.scale * globalScale;
+    spr.colR = go.sprite.colorR;
+    spr.colG = go.sprite.colorG;
+    spr.colB = go.sprite.colorB;
+    spr.sprite = (float)go.sprite.spriteIndex;
+}
+
+
+static Game* s_game = 0;
 
 extern "C" void game_initialize(void)
 {
-    // create "world bounds" object
-    {
-        GameObject* go = new GameObject("bounds");
-        WorldBoundsComponent* bounds = new WorldBoundsComponent();
-        bounds->xMin = -80.0f;
-        bounds->xMax =  80.0f;
-        bounds->yMin = -50.0f;
-        bounds->yMax =  50.0f;
-        go->AddComponent(bounds);
-        s_Objects.emplace_back(go);
-    }
-    WorldBoundsComponent* bounds = FindOfType<WorldBoundsComponent>();
-    
-    // create regular objects that move
-    for (auto i = 0; i < kObjectCount; ++i)
-    {
-        GameObject* go = new GameObject("object");
-
-        // position it within world bounds
-        PositionComponent* pos = new PositionComponent();
-        pos->x = RandomFloat(bounds->xMin, bounds->xMax);
-        pos->y = RandomFloat(bounds->yMin, bounds->yMax);
-        go->AddComponent(pos);
-
-        // setup a sprite for it (random sprite index from first 5), and initial white color
-        SpriteComponent* sprite = new SpriteComponent();
-        sprite->colorR = 1.0f;
-        sprite->colorG = 1.0f;
-        sprite->colorB = 1.0f;
-        sprite->spriteIndex = rand() % 5;
-        sprite->scale = 1.0f;
-        go->AddComponent(sprite);
-
-        // make it move
-        MoveComponent* move = new MoveComponent(0.5f, 0.7f);
-        go->AddComponent(move);
-
-        // make it avoid the bubble things
-        AvoidComponent* avoid = new AvoidComponent();
-        go->AddComponent(avoid);
-
-        s_Objects.emplace_back(go);
-    }
-
-    // create objects that should be avoided
-    for (auto i = 0; i < kAvoidCount; ++i)
-    {
-        GameObject* go = new GameObject("toavoid");
-        
-        // position it in small area near center of world bounds
-        PositionComponent* pos = new PositionComponent();
-        pos->x = RandomFloat(bounds->xMin, bounds->xMax) * 0.2f;
-        pos->y = RandomFloat(bounds->yMin, bounds->yMax) * 0.2f;
-        go->AddComponent(pos);
-
-        // setup a sprite for it (6th one), and a random color
-        SpriteComponent* sprite = new SpriteComponent();
-        sprite->colorR = RandomFloat(0.5f, 1.0f);
-        sprite->colorG = RandomFloat(0.5f, 1.0f);
-        sprite->colorB = RandomFloat(0.5f, 1.0f);
-        sprite->spriteIndex = 5;
-        sprite->scale = 2.0f;
-        go->AddComponent(sprite);
-        
-        // make it move, slowly
-        MoveComponent* move = new MoveComponent(0.1f, 0.2f);
-        go->AddComponent(move);
-        
-        // setup an "avoid this" component
-        AvoidThisComponent* avoid = new AvoidThisComponent();
-        avoid->distance = 1.3f;
-        go->AddComponent(avoid);
-        
-        s_Objects.emplace_back(go);
-    }
-
-    // call Start on all objects/components once they are all created
-    for (auto go : s_Objects)
-    {
-        go->Start();
-    }
+	s_game = new Game({-80.0f, 80.0f, -50.0f, 50.0f });
 }
-
 
 extern "C" void game_destroy(void)
 {
-    // just delete all objects/components
-    for (auto go : s_Objects)
-        delete go;
-    s_Objects.clear();
+    delete s_game;
 }
-
 
 extern "C" int game_update(sprite_data_t* data, double time, float deltaTime)
 {
+	assert(s_game);
+    // Update all positions
+    for (auto& go : s_game->regularObject)
+	{
+		UpdatePosition(deltaTime, go, s_game->bounds.wb);
+	}
+    for (auto& go : s_game->avoidThis)
+	{
+		UpdatePosition(deltaTime, go, s_game->bounds.wb);
+	}
+	
+    // Resolve all collisions
+    for (auto& go : s_game->regularObject)
+	{
+		ResolveCollisions(deltaTime, go, s_game->avoidThis);
+	}
+	
+    // Export rendering data
     int objectCount = 0;
-    // go through all objects
-    for (auto go : s_Objects)
-    {
-        // Update all their components
-        go->Update(time, deltaTime);
-
-        // For objects that have a Position & Sprite on them: write out
-        // their data into destination buffer that will be rendered later on.
-        //
-        // Using a smaller global scale "zooms out" the rendering, so to speak.
-        float globalScale = 0.05f;
-        PositionComponent* pos = go->GetComponent<PositionComponent>();
-        SpriteComponent* sprite = go->GetComponent<SpriteComponent>();
-        if (pos != nullptr && sprite != nullptr)
-        {
-            sprite_data_t& spr = data[objectCount++];
-            spr.posX = pos->x * globalScale;
-            spr.posY = pos->y * globalScale;
-            spr.scale = sprite->scale * globalScale;
-            spr.colR = sprite->colorR;
-            spr.colG = sprite->colorG;
-            spr.colB = sprite->colorB;
-            spr.sprite = (float)sprite->spriteIndex;
-        }
+    for (auto& go : s_game->regularObject)
+	{
+		ExportSpriteData(go, data[objectCount++]);
+    }
+    for (auto& go : s_game->avoidThis)
+	{
+		ExportSpriteData(go, data[objectCount++]);
     }
     return objectCount;
 }
