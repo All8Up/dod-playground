@@ -5,78 +5,136 @@
 #include <assert.h>
 #include <algorithm>
 
+#define INLINE __forceinline
+
 const int kObjectCount = 1000000;
 const int kAvoidCount = 20;
 
-
-
 static float RandomFloat01() { return (float)rand() / (float)RAND_MAX; }
 static float RandomFloat(float from, float to) { return RandomFloat01() * (to - from) + from; }
+static float RandomAngle() { return RandomFloat01() * 3.1415926f * 2; }
+float Clamp( float x, float lower, float upper ) { return std::max(lower, std::min(upper, x)); }
 
+template<class T> struct Id { int index; operator size_t() const { return index; } };
 
-template<class T> struct Id { int index; };
-
-struct PositionComponent;
-struct ColorComponent;
-struct SpriteComponent;
-struct MoveComponent;
-struct AvoidComponent;
-struct AvoidThisComponent;
+struct Position;
+struct Color;
+struct Sprite;
+struct Avoid;
+struct AvoidThis;
+template<class CRTP>
 struct Allocators
 {
-	std::vector<PositionComponent> pos;
-	std::vector<ColorComponent> color;
-	std::vector<SpriteComponent> sprite;
-	std::vector<MoveComponent> move;
-	std::vector<AvoidComponent> avoid;
-	std::vector<AvoidThisComponent> avoidThis;
-
-	template<class T, class... Args>
-	Id<T> New(Args&&... args);
+	template<class T, class... Args> Id<T> New(Args&&... args);
+};
+struct MutableComponents : Allocators<MutableComponents>
+{
+	std::vector<Position> pos;
+	std::vector<Color> color;
 
 	void SizeHint(size_t size);
-	
-	template<class T>       T& operator[]( Id<T> i );
-	template<class T> const T& operator[]( Id<T> i ) const;
+};
+struct StaticComponents : Allocators<StaticComponents>
+{
+	std::vector<Sprite> sprite;
+	std::vector<Avoid> avoid;
+	std::vector<AvoidThis> avoidThis;
+
+	void SizeHint(size_t size);
 };
 // -------------------------------------------------------------------------------------------------
 // components we use in our "game"
 
 
-// 2D position: just x,y coordinates
-struct PositionComponent
+// World bounds for our "game" logic: x,y minimum & maximum values
+struct WorldBounds
 {
-    float x, y;
+    const float xMin, xMax, yMin, yMax;
 	
-    PositionComponent(float x, float y)
-		: x(x)
-		, y(y)
+    WorldBounds(float xMin, float xMax, float yMin, float yMax)
+		: xMin(xMin)
+		, xMax(xMax)
+		, yMin(yMin)
+		, yMax(yMax)
     {
 	}
 };
 
+#define MUTABLE_ASSIGNABLE(T) T& operator=(const T& o) { this->~T(); return *new(this)T(o); }
 
-struct ColorComponent
+// 2D position: just x,y coordinates
+struct Position
 {
-    float colorR, colorG, colorB;
+    const float x, y;
+    const float velx, vely;
 
-    ColorComponent(float colorR, float colorG, float colorB)
+    Position(const WorldBounds& bounds, float boundsScale, float angle, float speed)
+		: x(RandomFloat(bounds.xMin, bounds.xMax) * boundsScale)
+		, y(RandomFloat(bounds.yMin, bounds.yMax) * boundsScale)
+        , velx(cosf(angle) * speed)
+        , vely(sinf(angle) * speed)
+    {
+	}
+    Position(float x, float y, float velx, float vely)
+		: x(x)
+		, y(y)
+        , velx(velx)
+        , vely(vely)
+    {
+	}
+
+	MUTABLE_ASSIGNABLE(Position);
+	
+	// Move around with constant velocity. When reached world bounds, reflect back from them.
+    INLINE Position UpdatePosition(float deltaTime, WorldBounds& bounds) const
+    {
+        // update position based on movement velocity & delta time
+        float _x = x + velx * deltaTime;
+        float _y = y + vely * deltaTime;
+		
+        // check against world bounds; put back onto bounds and mirror the velocity  to "bounce" back
+		float xVelScale = _x < bounds.xMin ? -1.f : (_x > bounds.xMax ? -1.f : 1.f);
+		float yVelScale = _y < bounds.yMin ? -1.f : (_y > bounds.yMax ? -1.f : 1.f);
+		_x = Clamp(_x, bounds.xMin, bounds.xMax);
+		_y = Clamp(_y, bounds.yMin, bounds.yMax);
+		float _velx = velx * xVelScale;
+		float _vely = vely * yVelScale;
+		return { _x, _y, _velx, _vely };
+    }
+
+	static void UpdatePositions(float deltaTime, WorldBounds& bounds, const std::vector<Position>& inputs, std::vector<Position>& outputs)
+	{
+		for (size_t i=0, end=inputs.size(); i!=end; ++i)
+		{
+			outputs[i] = inputs[i].UpdatePosition(deltaTime, bounds);
+		}
+	}
+};
+
+
+struct Color
+{
+    const float colorR, colorG, colorB;
+	
+    Color(float colorR, float colorG, float colorB)
 		: colorR(colorR)
 		, colorG(colorG)
 		, colorB(colorB)
     {
 	}
+
+	MUTABLE_ASSIGNABLE(Color);
 };
 
 // Sprite: sprite index (in the sprite atlas), and scale for rendering it
-struct SpriteComponent
+struct Sprite
 {
-    float scale;
-    int spriteIndex;
-	Id<ColorComponent> colorId;
-	Id<PositionComponent> posId;
+    const float scale;
+    const int spriteIndex;
+	const Id<Color> colorId;
+	const Id<Position> posId;
 	
-    SpriteComponent(int spriteIndex, float scale, Id<ColorComponent> color, Id<PositionComponent> pos)
+    Sprite(int spriteIndex, float scale, Id<Color> color, Id<Position> pos)
 		: scale(scale)
 		, spriteIndex(spriteIndex)
 		, colorId(color)
@@ -86,68 +144,14 @@ struct SpriteComponent
 };
 
 
-// World bounds for our "game" logic: x,y minimum & maximum values
-struct WorldBoundsComponent
-{
-    float xMin, xMax, yMin, yMax;
-	
-    WorldBoundsComponent(float xMin, float xMax, float yMin, float yMax)
-		: xMin(xMin)
-		, xMax(xMax)
-		, yMin(yMin)
-		, yMax(yMax)
-    {
-	}
-};
-
-float Clamp( float x, float lower, float upper )
-{
-	return std::max(lower, std::min(upper, x));
-}
-
-// Move around with constant velocity. When reached world bounds, reflect back from them.
-struct MoveComponent
-{
-    float velx, vely;
-	Id<PositionComponent> posId;
-    
-    MoveComponent(float minSpeed, float maxSpeed, Id<PositionComponent> pos)
-		: posId(pos)
-    {
-        // random angle
-        float angle = RandomFloat01() * 3.1415926f * 2;
-        // random movement speed between given min & max
-        float speed = RandomFloat(minSpeed, maxSpeed);
-        // velocity x & y components
-        velx = cosf(angle) * speed;
-        vely = sinf(angle) * speed;
-    }
-
-    void UpdatePosition(float deltaTime, WorldBoundsComponent& bounds, Allocators& a)
-    {
-		PositionComponent& pos = a[posId];
-        // update position based on movement velocity & delta time
-        pos.x += velx * deltaTime;
-        pos.y += vely * deltaTime;
-		
-        // check against world bounds; put back onto bounds and mirror the velocity component to "bounce" back
-		float xVelScale = pos.x < bounds.xMin ? -1.f : (pos.x > bounds.xMax ? -1.f : 1.f);
-		float yVelScale = pos.y < bounds.yMin ? -1.f : (pos.y > bounds.yMax ? -1.f : 1.f);
-		pos.x = Clamp(pos.x, bounds.xMin, bounds.xMax);
-		pos.y = Clamp(pos.y, bounds.yMin, bounds.yMax);
-		velx *= xVelScale;
-		vely *= yVelScale;
-    }
-};
-
-// When present, tells things that have Avoid component to avoid this object
-struct AvoidThisComponent
+// When present, tells things that have Avoid to avoid this object
+struct AvoidThis
 {
     float distanceSq;
-	Id<ColorComponent> colorId;
-	Id<PositionComponent> posId;
+	Id<Color> colorId;
+	Id<Position> posId;
 	
-    AvoidThisComponent(float distance, Id<ColorComponent> color, Id<PositionComponent> position)
+    AvoidThis(float distance, Id<Color> color, Id<Position> position)
 		: distanceSq(distance * distance)
 		, colorId(color)
 		, posId(position)
@@ -158,122 +162,139 @@ struct AvoidThisComponent
 // Objects with this component "avoid" objects with AvoidThis component:
 // - when they get closer to them than Avoid::distance, they bounce back,
 // - also they take sprite color from the object they just bumped into
-struct AvoidComponent
+struct Avoid
 {
-	Id<MoveComponent> moveId;
-	Id<ColorComponent> colorId;
+	Id<Position> posId;
+	Id<Color> colorId;
 	
-    AvoidComponent(Id<MoveComponent> move, Id<ColorComponent> color)
-		: moveId(move)
+    Avoid(Id<Position> pos, Id<Color> color)
+		: posId(pos)
 		, colorId(color)
     {
 	}
 
-    static float DistanceSq(const PositionComponent& a, const PositionComponent& b)
+    static float DistanceSq(const Position& a, const Position& b)
     {
         float dx = a.x - b.x;
         float dy = a.y - b.y;
         return dx * dx + dy * dy;
     }
     
-    static void ResolveCollision(float deltaTime, MoveComponent& move, PositionComponent& pos)
+    static Position ResolveCollision(float deltaTime, const Position& pos)
     {
         // flip velocity
-        move.velx = -move.velx;
-        move.vely = -move.vely;
+        float velx = -pos.velx;
+        float vely = -pos.vely;
         
         // move us out of collision, by moving just a tiny bit more than we'd normally move during a frame
-        pos.x += move.velx * deltaTime * 1.1f;
-        pos.y += move.vely * deltaTime * 1.1f;
+        float x = pos.x + velx * deltaTime * 1.1f;
+        float y = pos.y + vely * deltaTime * 1.1f;
+		return {x, y, velx, vely};
     }
 	
-    void ResolveCollisions(float deltaTime, Allocators& a)
+	struct NewState
+	{
+		Position pos;
+		Color color;
+	};
+	
+    INLINE NewState ResolveCollisions(float deltaTime, const std::vector<Position>& positions, const std::vector<Color>& colors, const std::vector<AvoidThis>& avoidThese) const
     {
-		MoveComponent& myMove = a[moveId];
-		ColorComponent& myColor = a[colorId];
-		PositionComponent& myPos = a[myMove.posId];
+		const Position& myPos = positions[posId];
+		const Color& myColor = colors[colorId];
         // check each thing in avoid list
-        for (auto& o : a.avoidThis)
+        for (auto& o : avoidThese)
         {
-			ColorComponent& oColor = a[o.colorId];
-			PositionComponent& oPos = a[o.posId];
+			const Color& oColor = colors[o.colorId];
+			const Position& oPos = positions[o.posId];
+
             // is our position closer to "thing to avoid" position than the avoid distance?
             if (DistanceSq(myPos, oPos) < o.distanceSq)
             {
-                ResolveCollision(deltaTime, myMove, myPos);
-
+                Position newPos = ResolveCollision(deltaTime, myPos);
                 // also make our sprite take the color of the thing we just bumped into
-                myColor.colorR = oColor.colorR;
-                myColor.colorG = oColor.colorG;
-                myColor.colorB = oColor.colorB;
+				return { newPos, oColor };
             }
         }
+		return { myPos, myColor };
     }
+	
+	static void ResolveCollisions(float deltaTime, std::vector<Position>& out_pos, std::vector<Color>& out_color, const std::vector<Position>& in_pos, const std::vector<Color>& in_color, const std::vector<Avoid>& avoid, const std::vector<AvoidThis>& in_avoidThese)
+	{
+		for (size_t i=0, end=avoid.size(); i!=end; ++i)
+		{
+			const Avoid& c = avoid[i];
+			const auto& result = c.ResolveCollisions(deltaTime, in_pos, in_color, in_avoidThese);
+			out_pos[c.posId] = result.pos;
+			out_color[c.colorId] = result.color;
+		}
+	}
 };
 
-template<class T> struct GetAllocatorInternal { static std::vector<T>& Vector(Allocators&); };
-template<> struct GetAllocatorInternal<PositionComponent>  { static std::vector<PositionComponent>&  Vector(Allocators& a) { return a.pos; } };
-template<> struct GetAllocatorInternal<ColorComponent>     { static std::vector<ColorComponent>&     Vector(Allocators& a) { return a.color; } };
-template<> struct GetAllocatorInternal<SpriteComponent>    { static std::vector<SpriteComponent>&    Vector(Allocators& a) { return a.sprite; } };
-template<> struct GetAllocatorInternal<MoveComponent>      { static std::vector<MoveComponent>&      Vector(Allocators& a) { return a.move; } };
-template<> struct GetAllocatorInternal<AvoidComponent>     { static std::vector<AvoidComponent>&     Vector(Allocators& a) { return a.avoid; } };
-template<> struct GetAllocatorInternal<AvoidThisComponent> { static std::vector<AvoidThisComponent>& Vector(Allocators& a) { return a.avoidThis; } };
+template<class T> struct GetAllocatorInternal { static std::vector<T>& Vector(...); };
+template<> struct GetAllocatorInternal<Position>  { static std::vector<Position>&  Vector(MutableComponents& a) { return a.pos; } };
+template<> struct GetAllocatorInternal<Color>     { static std::vector<Color>&     Vector(MutableComponents& a) { return a.color; } };
+template<> struct GetAllocatorInternal<Sprite>    { static std::vector<Sprite>&    Vector(StaticComponents& a) { return a.sprite; } };
+template<> struct GetAllocatorInternal<Avoid>     { static std::vector<Avoid>&     Vector(StaticComponents& a) { return a.avoid; } };
+template<> struct GetAllocatorInternal<AvoidThis> { static std::vector<AvoidThis>& Vector(StaticComponents& a) { return a.avoidThis; } };
 
+template<class A>
 template<class T, class... Args>
-Id<T> Allocators::New(Args&&... args)
+Id<T> Allocators<A>::New(Args&&... args)
 {
-	std::vector<T>& storage = GetAllocatorInternal<T>::Vector(*this);
+	std::vector<T>& storage = GetAllocatorInternal<T>::Vector((A&)*this);
 	int index = (int)storage.size();
 	storage.emplace_back(std::forward<Args>(args)...);
 	return { index };
 }
-template<class T>       T& Allocators::operator[]( Id<T> i )       { std::vector<T>& v = GetAllocatorInternal<T>::Vector(*this); return v[i.index]; }
-template<class T> const T& Allocators::operator[]( Id<T> i ) const { std::vector<T>& v = GetAllocatorInternal<T>::Vector(*this); return v[i.index]; }
-void Allocators::SizeHint(size_t size)
+void MutableComponents::SizeHint(size_t size)
 {
 	pos.reserve(size);
+	color.reserve(size);
+}
+void StaticComponents::SizeHint(size_t size)
+{
 	sprite.reserve(size);
-	move.reserve(size);
 	avoid.reserve(size);
 	avoidThis.reserve(size);
 }
 
-void NewAvoidThis(Allocators& a, const WorldBoundsComponent& bounds)
+void NewAvoidThis(MutableComponents& m, StaticComponents& s, const WorldBounds& bounds)
 {
-        // position it in small area near center of world bounds
-	Id<PositionComponent> pos = a.New<PositionComponent>(
-		RandomFloat(bounds.xMin, bounds.xMax) * 0.2f,
-		RandomFloat(bounds.yMin, bounds.yMax) * 0.2f);
-	Id<MoveComponent> move = a.New<MoveComponent>(0.1f, 0.2f, pos);
+    // random angle
+    // random movement speed between given min & max
+	// position it in small area near center of world bounds
+	Id<Position> pos = m.New<Position>(
+		bounds, 0.2f,
+		RandomAngle(), RandomFloat(0.1f, 0.2f));
     // setup a sprite for it (6th one), and a random color
-	Id<ColorComponent> color = a.New<ColorComponent>(
+	Id<Color> color = m.New<Color>(
 		RandomFloat(0.5f, 1.0f),
 		RandomFloat(0.5f, 1.0f),
 		RandomFloat(0.5f, 1.0f));
-	a.New<SpriteComponent>(
+	s.New<Sprite>(
 		5,
 		2.0f,
 		color,
 		pos);
         // setup an "avoid this" component
-	a.New<AvoidThisComponent>(1.3f, color, pos);
+	s.New<AvoidThis>(1.3f, color, pos);
 }
 
-void NewRegularObject(Allocators& a, const WorldBoundsComponent& bounds)
+void NewRegularObject(MutableComponents& m, StaticComponents& s, const WorldBounds& bounds)
 {
-        // position it within world bounds
-	Id<PositionComponent> pos = a.New<PositionComponent>(
-		RandomFloat(bounds.xMin, bounds.xMax),
-		RandomFloat(bounds.yMin, bounds.yMax));
-	Id<MoveComponent> move = a.New<MoveComponent>(0.5f, 0.7f, pos);
+	// position it within world bounds
+	Id<Position> pos = m.New<Position>(
+		bounds, 1.0f,
+		RandomAngle(), RandomFloat(0.5f, 0.7f));
         // setup a sprite for it (random sprite index from first 5), and initial white color
-	Id<ColorComponent> color = a.New<ColorComponent>(1.f, 1.f, 1.f);
-	a.New<SpriteComponent>(
+	Id<Color> color = m.New<Color>(1.f, 1.f, 1.f);
+	s.New<Sprite>(
 		rand() % 5,
 		1.0f,
 		color,
 		pos);
-	a.New<AvoidComponent>(move, color);
+	s.New<Avoid>(pos, color);
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -281,40 +302,47 @@ void NewRegularObject(Allocators& a, const WorldBoundsComponent& bounds)
 
 struct Game
 {
-	WorldBoundsComponent bounds;
-	Allocators components;
+	WorldBounds bounds;
+	MutableComponents mComponents;
+	StaticComponents  sComponents;
 
-	Game(const WorldBoundsComponent& bounds)
+	Game(const WorldBounds& bounds)
 		: bounds(bounds)
 	{
-		components.SizeHint(kObjectCount + kAvoidCount);
+		mComponents.SizeHint(kObjectCount + kAvoidCount);
+		sComponents.SizeHint(kObjectCount + kAvoidCount);
 
 		// create regular objects that move
 		for (auto i = 0; i < kObjectCount; ++i)
-			NewRegularObject(components, bounds);
+			NewRegularObject(mComponents, sComponents, bounds);
 
 		// create objects that should be avoided
 		for (auto i = 0; i < kAvoidCount; ++i)
-			NewAvoidThis(components, bounds);
+			NewAvoidThis(mComponents, sComponents, bounds);
 	}
 };
 
-
-void ExportSpriteData(const SpriteComponent& sprite, sprite_data_t& spr, Allocators& a)
+int ExportSpriteData(const std::vector<Sprite>& sprites, const std::vector<Position>& positions, const std::vector<Color>& colors, sprite_data_t* out)
 {
-	PositionComponent& pos = a[sprite.posId];
-	ColorComponent& color = a[sprite.colorId]
-    // write out their Position & Sprite data into destination buffer that will be rendered later on.
-    //
-    // Using a smaller global scale "zooms out" the rendering, so to speak.
-    float globalScale = 0.05f;
-    spr.posX = pos.x * globalScale;
-    spr.posY = pos.y * globalScale;
-    spr.scale = sprite.scale * globalScale;
-    spr.colR = color.colorR;
-    spr.colG = color.colorG;
-    spr.colB = color.colorB;
-    spr.sprite = (float)sprite.spriteIndex;
+	int objectCount = 0;
+    for (auto& sprite : sprites)
+	{
+		sprite_data_t& spr = out[objectCount++];
+		const Position& pos = positions[sprite.posId];
+		const Color& color = colors[sprite.colorId];
+		// write out their Position & Sprite data into destination buffer that will be rendered later on.
+		//
+		// Using a smaller global scale "zooms out" the rendering, so to speak.
+		float globalScale = 0.05f;
+		spr.posX = pos.x * globalScale;
+		spr.posY = pos.y * globalScale;
+		spr.scale = sprite.scale * globalScale;
+		spr.colR = color.colorR;
+		spr.colG = color.colorG;
+		spr.colB = color.colorB;
+		spr.sprite = (float)sprite.spriteIndex;
+    }
+	return objectCount;
 }
 
 
@@ -333,23 +361,25 @@ extern "C" void game_destroy(void)
 extern "C" int game_update(sprite_data_t* data, double time, float deltaTime)
 {
 	assert(s_game);
-    // Update all positions
-    for (auto& c : s_game->components.move)
-	{
-		c.UpdatePosition(deltaTime, s_game->bounds, s_game->components);
-	}
+	const StaticComponents& constants = s_game->sComponents;
+	const MutableComponents& inputs = s_game->mComponents;
 	
-    // Resolve all collisions
-    for (auto& c : s_game->components.avoid)
-	{
-		c.ResolveCollisions(deltaTime, s_game->components);
-    }
+	std::vector<Position> movedPositions = inputs.pos;
 
-	int objectCount = 0;
-    for (auto& c : s_game->components.sprite)
-	{
-		ExportSpriteData(c, data[objectCount++], s_game->components);
-    }
-    return objectCount;
+    // Update all positions
+	Position::UpdatePositions(deltaTime, s_game->bounds, inputs.pos, movedPositions);
+	
+	std::vector<Position> resolvedPositions = movedPositions;
+	std::vector<Color> resolvedColors = inputs.color;
+
+    // Resolve all collisions
+	Avoid::ResolveCollisions(deltaTime, resolvedPositions, resolvedColors, movedPositions, inputs.color, constants.avoid, constants.avoidThis);
+
+	
+	MutableComponents& output = s_game->mComponents;
+	std::swap(output.pos, resolvedPositions);
+	std::swap(output.color, resolvedColors);
+
+    return ExportSpriteData(constants.sprite, output.pos, output.color, data);
 }
 
