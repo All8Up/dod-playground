@@ -371,6 +371,7 @@ extern "C" int game_update(sprite_data_t* data, double time, float deltaTime)
 	std::vector<Position> movedPositions;
 	std::swap(movedPositions, buffer.pos);
 
+
     // Update all positions
 	Position::UpdatePositions(deltaTime, s_game->bounds, state.pos, movedPositions);
 	
