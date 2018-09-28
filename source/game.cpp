@@ -12,6 +12,30 @@ const int kAvoidCount = 20;
 static float RandomFloat01() { return (float)rand() / (float)RAND_MAX; }
 static float RandomFloat(float from, float to) { return RandomFloat01() * (to - from) + from; }
 
+
+template<class T> struct Id { int index; };
+
+struct PositionComponent;
+struct SpriteComponent;
+struct MoveComponent;
+struct AvoidComponent;
+struct AvoidThisComponent;
+struct Allocators
+{
+	std::vector<PositionComponent> pos;
+	std::vector<SpriteComponent> sprite;
+	std::vector<MoveComponent> move;
+	std::vector<AvoidComponent> avoid;
+	std::vector<AvoidThisComponent> avoidThis;
+
+	template<class T, class... Args>
+	Id<T> New(Args&&... args);
+
+	void SizeHint(size_t size);
+	
+	template<class T>       T& operator[]( Id<T> i );
+	template<class T> const T& operator[]( Id<T> i ) const;
+};
 // -------------------------------------------------------------------------------------------------
 // components we use in our "game"
 
@@ -35,15 +59,15 @@ struct SpriteComponent
     float colorR, colorG, colorB;
     int spriteIndex;
     float scale;
-	PositionComponent& pos;
+	Id<PositionComponent> posId;
 	
-    SpriteComponent(float colorR, float colorG, float colorB, int spriteIndex, float scale, PositionComponent& pos)
+    SpriteComponent(float colorR, float colorG, float colorB, int spriteIndex, float scale, Id<PositionComponent> pos)
 		: colorR(colorR)
 		, colorG(colorG)
 		, colorB(colorB)
 		, spriteIndex(spriteIndex)
 		, scale(scale)
-		, pos(pos)
+		, posId(pos)
     {
 	}
 };
@@ -68,10 +92,10 @@ struct WorldBoundsComponent
 struct MoveComponent
 {
     float velx, vely;
-	PositionComponent& pos;
+	Id<PositionComponent> posId;
     
-    MoveComponent(float minSpeed, float maxSpeed, PositionComponent& pos)
-		: pos(pos)
+    MoveComponent(float minSpeed, float maxSpeed, Id<PositionComponent> pos)
+		: posId(pos)
     {
         // random angle
         float angle = RandomFloat01() * 3.1415926f * 2;
@@ -82,8 +106,9 @@ struct MoveComponent
         vely = sinf(angle) * speed;
     }
 
-    void UpdatePosition(float deltaTime, WorldBoundsComponent& bounds)
+    void UpdatePosition(float deltaTime, WorldBoundsComponent& bounds, Allocators& a)
     {
+		PositionComponent& pos = a[posId];
         // update position based on movement velocity & delta time
         pos.x += velx * deltaTime;
         pos.y += vely * deltaTime;
@@ -116,11 +141,11 @@ struct MoveComponent
 struct AvoidThisComponent
 {
     float distance;
-	SpriteComponent& sprite;
+	Id<SpriteComponent> spriteId;
 	
-    AvoidThisComponent(float distance, SpriteComponent& sprite)
+    AvoidThisComponent(float distance, Id<SpriteComponent> sprite)
 		: distance(distance)
-		, sprite(sprite)
+		, spriteId(sprite)
     {
 	}
 };
@@ -130,12 +155,12 @@ struct AvoidThisComponent
 // - also they take sprite color from the object they just bumped into
 struct AvoidComponent
 {
-	MoveComponent& myMove;
-	SpriteComponent& mySprite;
+	Id<MoveComponent> moveId;
+	Id<SpriteComponent> spriteId;
 	
-    AvoidComponent(MoveComponent& move, SpriteComponent& sprite)
-		: myMove(move)
-		, mySprite(sprite)
+    AvoidComponent(Id<MoveComponent> move, Id<SpriteComponent> sprite)
+		: moveId(move)
+		, spriteId(sprite)
     {
 	}
 
@@ -157,109 +182,92 @@ struct AvoidComponent
         pos.y += move.vely * deltaTime * 1.1f;
     }
 	
-    void ResolveCollisions(float deltaTime, std::vector<AvoidThisComponent>& avoidList)
+    void ResolveCollisions(float deltaTime, std::vector<AvoidThisComponent>& avoidList, Allocators& a)
     {
+		MoveComponent& myMove = a[moveId];
+		SpriteComponent& mySprite = a[spriteId];
+		PositionComponent& myPos = a[myMove.posId];
         // check each thing in avoid list
         for (auto& o : avoidList)
         {
+			SpriteComponent& oSprite = a[o.spriteId];
+			PositionComponent& oPos = a[oSprite.posId];
             // is our position closer to "thing to avoid" position than the avoid distance?
-            if (DistanceSq(myMove.pos, o.sprite.pos) < o.distance * o.distance)
+            if (DistanceSq(myPos, oPos) < o.distance * o.distance)
             {
-                ResolveCollision(deltaTime, myMove, myMove.pos);
+                ResolveCollision(deltaTime, myMove, myPos);
 
                 // also make our sprite take the color of the thing we just bumped into
-                mySprite.colorR = o.sprite.colorR;
-                mySprite.colorG = o.sprite.colorG;
-                mySprite.colorB = o.sprite.colorB;
+                mySprite.colorR = oSprite.colorR;
+                mySprite.colorG = oSprite.colorG;
+                mySprite.colorB = oSprite.colorB;
             }
         }
     }
 };
 
-struct Allocators;
 template<class T> struct GetAllocatorInternal { static std::vector<T>& Vector(Allocators&); };
-struct Allocators
-{
-	void SizeHint(size_t size)
-	{
-		pos.reserve(size);
-		sprite.reserve(size);
-		move.reserve(size);
-		avoidThis.reserve(size);
-	}
-	std::vector<PositionComponent> pos;
-	std::vector<SpriteComponent> sprite;
-	std::vector<MoveComponent> move;
-	std::vector<AvoidComponent> avoid;
-	std::vector<AvoidThisComponent> avoidThis;
-
-	template<class T, class... Args>
-	T& New(Args&&... args)
-	{
-		std::vector<T>& storage = GetAllocatorInternal<T>::Vector(*this);
-		storage.emplace_back(std::forward<Args>(args)...);
-		return storage.back();
-	}
-};
-
 template<> struct GetAllocatorInternal<PositionComponent>  { static std::vector<PositionComponent>&  Vector(Allocators& a) { return a.pos; } };
 template<> struct GetAllocatorInternal<SpriteComponent>    { static std::vector<SpriteComponent>&    Vector(Allocators& a) { return a.sprite; } };
 template<> struct GetAllocatorInternal<MoveComponent>      { static std::vector<MoveComponent>&      Vector(Allocators& a) { return a.move; } };
 template<> struct GetAllocatorInternal<AvoidComponent>     { static std::vector<AvoidComponent>&     Vector(Allocators& a) { return a.avoid; } };
 template<> struct GetAllocatorInternal<AvoidThisComponent> { static std::vector<AvoidThisComponent>& Vector(Allocators& a) { return a.avoidThis; } };
 
-struct AvoidThis
+template<class T, class... Args>
+Id<T> Allocators::New(Args&&... args)
 {
-	PositionComponent& pos;
-	MoveComponent& move;
-	SpriteComponent& sprite;
-	AvoidThisComponent& avoid;
-	
-    AvoidThis(Allocators& a, const WorldBoundsComponent& bounds)
+	std::vector<T>& storage = GetAllocatorInternal<T>::Vector(*this);
+	int index = (int)storage.size();
+	storage.emplace_back(std::forward<Args>(args)...);
+	return { index };
+}
+template<class T>       T& Allocators::operator[]( Id<T> i )       { std::vector<T>& v = GetAllocatorInternal<T>::Vector(*this); return v[i.index]; }
+template<class T> const T& Allocators::operator[]( Id<T> i ) const { std::vector<T>& v = GetAllocatorInternal<T>::Vector(*this); return v[i.index]; }
+void Allocators::SizeHint(size_t size)
+{
+	pos.reserve(size);
+	sprite.reserve(size);
+	move.reserve(size);
+	avoid.reserve(size);
+	avoidThis.reserve(size);
+}
+
+void NewAvoidThis(Allocators& a, const WorldBoundsComponent& bounds)
+{
         // position it in small area near center of world bounds
-		: pos(a.New<PositionComponent>(
+	Id<PositionComponent> pos = a.New<PositionComponent>(
 		      RandomFloat(bounds.xMin, bounds.xMax) * 0.2f,
-			  RandomFloat(bounds.yMin, bounds.yMax) * 0.2f))
-		, move(a.New<MoveComponent>(0.1f, 0.2f, pos))
+		RandomFloat(bounds.yMin, bounds.yMax) * 0.2f);
+	Id<MoveComponent> move = a.New<MoveComponent>(0.1f, 0.2f, pos);
         // setup a sprite for it (6th one), and a random color
-		, sprite(a.New<SpriteComponent>(
+	Id<SpriteComponent> sprite = a.New<SpriteComponent>(
 		         RandomFloat(0.5f, 1.0f),
 		         RandomFloat(0.5f, 1.0f),
 		         RandomFloat(0.5f, 1.0f),
 		         5,
 		         2.0f,
-		         pos))
+		pos);
         // setup an "avoid this" component
-		, avoid(a.New<AvoidThisComponent>(1.3f, sprite))
-	{
-	}
-};
+	a.New<AvoidThisComponent>(1.3f, sprite);
+}
 
-struct RegularObject
+void NewRegularObject(Allocators& a, const WorldBoundsComponent& bounds)
 {
-	PositionComponent& pos;
-	MoveComponent& move;
-	SpriteComponent& sprite;
-	AvoidComponent& avoid;
-	
-    RegularObject(Allocators& a, const WorldBoundsComponent& bounds)
         // position it within world bounds
-		: pos(a.New<PositionComponent>(
+	Id<PositionComponent> pos = a.New<PositionComponent>(
 		      RandomFloat(bounds.xMin, bounds.xMax),
-			  RandomFloat(bounds.yMin, bounds.yMax)))
-		, move(a.New<MoveComponent>(0.5f, 0.7f, pos))
+		RandomFloat(bounds.yMin, bounds.yMax));
+	Id<MoveComponent> move = a.New<MoveComponent>(0.5f, 0.7f, pos);
         // setup a sprite for it (random sprite index from first 5), and initial white color
-		, sprite(a.New<SpriteComponent>(
+	Id<SpriteComponent> sprite = a.New<SpriteComponent>(
 		         1.0f,
 		         1.0f,
 		         1.0f,
 		         rand() % 5,
 		         1.0f,
-		         pos))
-		, avoid(a.New<AvoidComponent>(move, sprite))
-	{
-	}
-};
+		        pos);
+	a.New<AvoidComponent>(move, sprite);
+}
 
 // -------------------------------------------------------------------------------------------------
 // "the game"
@@ -267,8 +275,6 @@ struct RegularObject
 struct Game
 {
 	WorldBoundsComponent bounds;
-	std::vector<AvoidThis> avoidThis;
-	std::vector<RegularObject> regularObject;
 	Allocators components;
 
 	Game(const WorldBoundsComponent& bounds)
@@ -277,37 +283,30 @@ struct Game
 		components.SizeHint(kObjectCount + kAvoidCount);
 
 		// create regular objects that move
-		regularObject.reserve(kObjectCount);
 		for (auto i = 0; i < kObjectCount; ++i)
-			regularObject.emplace_back(components, bounds);
+			NewRegularObject(components, bounds);
 
 		// create objects that should be avoided
-		avoidThis.reserve(kAvoidCount);
 		for (auto i = 0; i < kAvoidCount; ++i)
-			avoidThis.emplace_back(components, bounds);
-	}
-	void Clear()
-	{
-		avoidThis.clear();
-		regularObject.clear();
+			NewAvoidThis(components, bounds);
 	}
 };
 
 
-template<class T>
-void ExportSpriteData(const T& go, sprite_data_t& spr)
+void ExportSpriteData(const SpriteComponent& sprite, sprite_data_t& spr, Allocators& a)
 {
+	PositionComponent& pos = a[sprite.posId];
     // write out their Position & Sprite data into destination buffer that will be rendered later on.
     //
     // Using a smaller global scale "zooms out" the rendering, so to speak.
     float globalScale = 0.05f;
-    spr.posX = go.pos.x * globalScale;
-    spr.posY = go.pos.y * globalScale;
-    spr.scale = go.scale * globalScale;
-    spr.colR = go.colorR;
-    spr.colG = go.colorG;
-    spr.colB = go.colorB;
-    spr.sprite = (float)go.spriteIndex;
+    spr.posX = pos.x * globalScale;
+    spr.posY = pos.y * globalScale;
+    spr.scale = sprite.scale * globalScale;
+    spr.colR = sprite.colorR;
+    spr.colG = sprite.colorG;
+    spr.colB = sprite.colorB;
+    spr.sprite = (float)sprite.spriteIndex;
 }
 
 
@@ -329,19 +328,19 @@ extern "C" int game_update(sprite_data_t* data, double time, float deltaTime)
     // Update all positions
     for (auto& c : s_game->components.move)
 	{
-		c.UpdatePosition(deltaTime, s_game->bounds);
+		c.UpdatePosition(deltaTime, s_game->bounds, s_game->components);
 	}
 	
     // Resolve all collisions
     for (auto& c : s_game->components.avoid)
 	{
-		c.ResolveCollisions(deltaTime, s_game->components.avoidThis);
+		c.ResolveCollisions(deltaTime, s_game->components.avoidThis, s_game->components);
     }
 
 	int objectCount = 0;
     for (auto& c : s_game->components.sprite)
 	{
-		ExportSpriteData(c, data[objectCount++]);
+		ExportSpriteData(c, data[objectCount++], s_game->components);
     }
     return objectCount;
 }
