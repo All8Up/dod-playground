@@ -304,6 +304,7 @@ struct Game
 {
 	WorldBounds bounds;
 	MutableComponents mComponents;
+	MutableComponents mComponentsBuffer;
 	StaticComponents  sComponents;
 
 	Game(const WorldBounds& bounds)
@@ -319,6 +320,8 @@ struct Game
 		// create objects that should be avoided
 		for (auto i = 0; i < kAvoidCount; ++i)
 			NewAvoidThis(mComponents, sComponents, bounds);
+		
+		mComponentsBuffer = mComponents;
 	}
 };
 
@@ -362,24 +365,29 @@ extern "C" int game_update(sprite_data_t* data, double time, float deltaTime)
 {
 	assert(s_game);
 	const StaticComponents& constants = s_game->sComponents;
-	const MutableComponents& inputs = s_game->mComponents;
+	MutableComponents& state = s_game->mComponents;
+	MutableComponents& buffer = s_game->mComponentsBuffer;
 	
-	std::vector<Position> movedPositions = inputs.pos;
+	std::vector<Position> movedPositions;
+	std::swap(movedPositions, buffer.pos);
 
     // Update all positions
-	Position::UpdatePositions(deltaTime, s_game->bounds, inputs.pos, movedPositions);
+	Position::UpdatePositions(deltaTime, s_game->bounds, state.pos, movedPositions);
 	
-	std::vector<Position> resolvedPositions = movedPositions;
-	std::vector<Color> resolvedColors = inputs.color;
+	std::vector<Position> resolvedPositions;
+	std::swap(resolvedPositions, state.pos);
+	std::vector<Color> resolvedColors;
+	std::swap(resolvedColors, buffer.color);
 
     // Resolve all collisions
-	Avoid::ResolveCollisions(deltaTime, resolvedPositions, resolvedColors, movedPositions, inputs.color, constants.avoid, constants.avoidThis);
-
+	Avoid::ResolveCollisions(deltaTime, resolvedPositions, resolvedColors, movedPositions, state.color, constants.avoid, constants.avoidThis);
 	
-	MutableComponents& output = s_game->mComponents;
-	std::swap(output.pos, resolvedPositions);
-	std::swap(output.color, resolvedColors);
+	std::swap(buffer.pos, movedPositions);
+	std::swap(buffer.color, state.color);
+	
+	std::swap(state.pos, resolvedPositions);
+	std::swap(state.color, resolvedColors);
 
-    return ExportSpriteData(constants.sprite, output.pos, output.color, data);
+    return ExportSpriteData(constants.sprite, state.pos, state.color, data);
 }
 
